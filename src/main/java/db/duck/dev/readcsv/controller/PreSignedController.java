@@ -22,10 +22,11 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 @RequestMapping("/s3")
 public class PreSignedController {
 
-  // http://localhost:8080/s3/presigned?filename=sample&bucket=duck-db-dev
+  // http://localhost:8080/s3/presigned?filename=sample&prefix=dev
   @GetMapping("/presigned")
-  public String getPreSignedUrl(@RequestParam String filename, @RequestParam String bucket) {
-    String key = filename + "_" + UUID.randomUUID() + ".csv";
+  public String getPreSignedUrl(@RequestParam String filename, @RequestParam String prefix) {
+    String bucket = "duck-db-dev";
+    String key = prefix + "/" + filename + "_" + UUID.randomUUID() + ".csv";
 
     try (S3Presigner presigner = S3Presigner.builder()
         .region(Region.AP_NORTHEAST_1)
