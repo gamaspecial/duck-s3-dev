@@ -21,6 +21,7 @@ public class ReadCsvController {
 
   private final static String bucketName = "duck-db-dev";
 
+  // http://localhost:8080/csv/read?key=sample_88ba926e-8bbb-4c16-8fe5-fd42c759e84f.csv
   @GetMapping("/read")
   public List<String[]> processCsv(@RequestParam String key) throws IOException, SQLException {
     String s3Url = "s3://" + bucketName + "/" + key;
