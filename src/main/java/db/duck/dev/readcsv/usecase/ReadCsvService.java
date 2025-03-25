@@ -1,22 +1,19 @@
 package db.duck.dev.readcsv.usecase;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
+import org.jooq.DSLContext;
 import org.springframework.stereotype.Service;
 
 import db.duck.dev.readcsv.domain.Header;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
+import lombok.AllArgsConstructor;
 
 @Service
+@AllArgsConstructor
 public class ReadCsvService {
+
+  private final DSLContext dsl;
 
   public record Data(
       List<Header> headers,
@@ -26,56 +23,30 @@ public class ReadCsvService {
   }
 
   public Data read(String s3Url, boolean header, int skip) {
-    try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
-        Statement stmt = conn.createStatement();
-        DefaultCredentialsProvider credentials = DefaultCredentialsProvider.create()) {
+    var res = dsl.selectFrom(String.format("""
+              read_csv(
+                '%s',
+                header=%s,
+                skip=%s
+              )
+            """, s3Url, header, skip))
+        .fetch();
 
-      stmt.execute(String.format("""
-              CREATE SECRET s3_cred(
-                  TYPE s3,
-                  KEY_ID '%s',
-                  SECRET '%s',
-                  REGION '%s'
-              );
-              """,
-          credentials.resolveCredentials().accessKeyId(),
-          credentials.resolveCredentials().secretAccessKey(),
-          new DefaultAwsRegionProviderChain().getRegion().id()
-      ));
-      stmt.execute("INSTALL httpfs");
-      stmt.execute("LOAD httpfs");
+    // head get
+    var headers = Arrays.stream(res.fields()).map(
+        field -> new Header(field.getName(), field.getDataType().getTypeName())
+    ).toList();
 
-      ResultSet rs = stmt.executeQuery(String.format("""
-          SELECT * FROM
-            read_csv(
-              '%s',
-              header=%s,
-              skip=%s
-            )
-          """, s3Url, header, skip));
-
-      ResultSetMetaData meta = rs.getMetaData();
-      int columnCount = meta.getColumnCount();
-
-      var headers = new ArrayList<Header>();
-      for (int i = 1; i <= columnCount; i++) {
-        headers.add(new Header(meta.getColumnName(i), meta.getColumnTypeName(i)));
+    // value get
+    var rows = res.stream().map(record -> {
+      String[] row = new String[res.fields().length];
+      for (int i = 0; i < res.fields().length; i++) {
+        row[i] = record.get(i, String.class);
       }
+      return row;
+    }).toList();
 
-      List<String[]> results = new ArrayList<>();
-
-      while (rs.next()) {
-        String[] row = new String[columnCount];
-        for (int i = 1; i <= columnCount; i++) {
-          row[i - 1] = rs.getString(i);
-        }
-        results.add(row);
-      }
-
-      return new Data(headers, results);
-    } catch (SQLException e) {
-      throw new RuntimeException("DuckDB S3直接読み込みエラー", e);
-    }
+    return new Data(headers, rows);
   }
 }
 
