@@ -2,7 +2,6 @@ package db.duck.dev.readcsv.controller;
 
 import java.io.IOException;
 import java.sql.SQLException;
-import java.util.List;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -23,8 +22,12 @@ public class ReadCsvController {
 
   // http://localhost:8080/csv/read?key=sample_88ba926e-8bbb-4c16-8fe5-fd42c759e84f.csv
   @GetMapping("/read")
-  public List<String[]> processCsv(@RequestParam String key) throws IOException, SQLException {
+  public ReadCsvService.Data processCsv(
+      @RequestParam String key,
+      @RequestParam(defaultValue = "true") boolean header,
+      @RequestParam(defaultValue = "0") int skip
+  ) throws IOException, SQLException {
     String s3Url = "s3://" + bucketName + "/" + key;
-    return readCsvService.read(s3Url);
+    return readCsvService.read(s3Url, header, skip);
   }
 }
