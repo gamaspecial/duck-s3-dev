@@ -34,6 +34,7 @@ public class ReadCsvService {
   );
 
   private static DataType<?> mapToDataType(String type) {
+    // name から DataType に直で変換できないか
     return TYPE_MAPPING.getOrDefault(type.toUpperCase(), SQLDataType.VARCHAR);
   }
 
@@ -45,6 +46,7 @@ public class ReadCsvService {
   }
 
   public Data read(String s3Url, boolean header, int skip) {
+    // 生の SQL で取得するしかないか
     var pragmaResult = dsl.fetch(String.format("DESCRIBE SELECT * FROM read_csv_auto('%s')", s3Url));
 
     List<String> columnNames = pragmaResult.getValues("column_name", String.class);
@@ -54,22 +56,27 @@ public class ReadCsvService {
         .mapToObj(i -> new Header(columnNames.get(i), columnTypes.get(i)))
         .toList();
 
+    // もうちょっとスマートな Field 生成方法があるかもしれない
     var fields = IntStream.range(0, columnNames.size())
         .mapToObj(i -> DSL.field('"' + columnNames.get(i) + '"', mapToDataType(columnTypes.get(i))))
         .toList();
+
+    // memo: fields が列順序を保持しているので、取込設定の列順序から取得カラムを指定すればいい
 
     var res = dsl.select(fields)
         .from(String.format("""
               read_csv(
                 '%s'
               )
-            """, s3Url, header, skip))
+            """, s3Url
+//            , header, skip
+        ))
         .fetch();
 
     var rows = res.stream().map(record -> {
       String[] row = new String[fields.size()];
       for (int i = 0; i < fields.size(); i++) {
-        Object value = record.get(fields.get(i)); // Field<T> から型安全に取得
+        var value = record.get(fields.get(i));
         row[i] = value != null ? value.toString() : null;
       }
       return row;
