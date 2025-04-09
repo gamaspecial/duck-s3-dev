@@ -17,7 +17,7 @@ public class DuckDbConfig {
   public DataSource duckDbDataSource() {
     DriverManagerDataSource ds = new DriverManagerDataSource();
     ds.setDriverClassName("org.duckdb.DuckDBDriver");
-    ds.setUrl("jdbc:duckdb:");
+    ds.setUrl("jdbc:duckdb:/tmp/duck.db");
     return ds;
   }
 

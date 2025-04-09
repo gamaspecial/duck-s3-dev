@@ -1,23 +1,32 @@
 package db.duck.dev.readcsv.usecase;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.ResultSetMetaData;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
-import org.jooq.DSLContext;
+import javax.sql.DataSource;
+
+import org.jooq.impl.DSL;
+import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import db.duck.dev.readcsv.domain.CsvImportFormat;
 import db.duck.dev.readcsv.domain.Header;
+import db.duck.dev.readcsv.domain.ImportField;
+import db.duck.dev.readcsv.domain.ImportFieldType;
+import db.duck.dev.readcsv.domain.ImportMethod;
 import lombok.AllArgsConstructor;
 
 @Service
 @AllArgsConstructor
 public class ReadCsvService {
 
-  private final DSLContext dsl;
+  //  private final DSLContext dsl;
+  private final DataSource dataSource;
 
   public record Data(
       List<Header> headers,
@@ -26,165 +35,100 @@ public class ReadCsvService {
 
   }
 
+  @Transactional
   public Data read(String s3Url, boolean header, int skip) {
 
-    try {
-      Connection conn = DriverManager.getConnection("jdbc:duckdb:duckdb.db");
-      Statement stmt = conn.createStatement();
-      try {
-        var rs = stmt.executeQuery(String.format("""
-              SELECT
-                *
-              FROM
-              read_csv(
-                '%s',
-                columns = {'name': 'VARCHAR', 'age': 'INTEGER'},
-                store_rejects = true,
-                rejects_scan = 'reject_scans',
-                rejects_table = 'reject_errors',
-                rejects_limit = 1000
-              )
-            """, s3Url
+    // format
+    var format = new CsvImportFormat(
+        1, "",
+        Map.of(
+            ImportField.CUST_CD, new ImportMethod.FromCsvColumn(2),
+            ImportField.AMOUNT, new ImportMethod.FromCsvColumn(0),
+            ImportField.DATE, new ImportMethod.FromCsvColumn(1)
+        )
+    );
+
+    var con = DataSourceUtils.getConnection(dataSource);
+    var dsl = DSL.using(con);
+
+    // 1. 対象S3 CSVのカラム一覧を取得
+    var pragmaResult = dsl.fetch(String.format("DESCRIBE SELECT * FROM read_csv_auto('%s')", s3Url));
+    List<String> columnNames = pragmaResult.getValues("column_name", String.class);
+
+    // <order, カラム> formatで設定されているカラムを取得
+    var selectedColumns = format.getMappings().entrySet().stream()
+        .filter(entry -> entry.getValue() instanceof ImportMethod.FromCsvColumn)
+        .collect(Collectors.toMap(
+            entry -> ((ImportMethod.FromCsvColumn) entry.getValue()).columnIndex(),
+            Map.Entry::getKey
         ));
-        try (rs) {
-          ResultSetMetaData meta = rs.getMetaData();
-          int columnCount = meta.getColumnCount();
 
-          while (rs.next()) {
-            for (int i = 1; i <= columnCount; i++) {
-              String columnName = meta.getColumnName(i);
-              String value = rs.getString(i);
-              System.out.printf("%s = %s%n", columnName, value);
-            }
-            System.out.println("-----");
+    // <カラム名, 型名> CSVヘッダ一覧
+    var columns = IntStream.range(0, columnNames.size())
+        .boxed()
+        .collect(Collectors.toMap(
+            columnNames::get,
+            i -> Optional.ofNullable(selectedColumns.get(i)).map(ImportField::getType).orElse(ImportFieldType.VARCHAR),
+            (v1, v2) -> v1,
+            LinkedHashMap::new
+        ));
+
+    // read_csv_auto のカラム設定
+    String columnsScan = columns.entrySet().stream()
+        .map(entry -> String.format("'%s': '%s'", entry.getKey(), entry.getValue()))
+        .collect(Collectors.joining(", "));
+
+    var res = dsl.fetch(
+        String.format(
+            """
+                  SELECT
+                    %s
+                  FROM
+                  read_csv_auto(
+                    '%s',
+                    columns = {{ %s }},
+                    store_rejects = true,
+                    rejects_scan = 'reject_scans',
+                    rejects_table = 'reject_errors',
+                    rejects_limit = 1000
+                  )
+                """,
+            s3Url,
+            columnsScan
+        )
+    );
+
+    // エラー情報の取得
+    var rejectErrors = dsl.select()
+        .from("reject_errors")
+        .fetch();
+    printResult(rejectErrors);
+    var rejectScans = dsl.select()
+        .from("reject_scans")
+        .fetch();
+    printResult(rejectScans);
+
+    return new Data(
+        columnNames.stream().map(f -> new Header(f, f)).toList(),
+        res.stream().map(record -> {
+          String[] row = new String[columnNames.size()];
+          for (int i = 0; i < columnNames.size(); i++) {
+            var value = record.get(columnNames.get(i));
+            row[i] = value != null ? value.toString() : null;
           }
-        }
+          return row;
+        }).toList()
+    );
+  }
 
-        var rejectErrors = conn.createStatement().executeQuery("SELECT * FROM reject_errors");
-        try (rejectErrors) {
-          ResultSetMetaData meta = rejectErrors.getMetaData();
-          int columnCount = meta.getColumnCount();
-
-          while (rejectErrors.next()) {
-            for (int i = 1; i <= columnCount; i++) {
-              String columnName = meta.getColumnName(i);
-              String value = rejectErrors.getString(i);
-              System.out.printf("%s = %s%n", columnName, value);
-            }
-            System.out.println("-----");
-          }
-        }
-
-        var rejectScans = conn.createStatement().executeQuery("SELECT * FROM reject_scans");
-        try (rejectScans) {
-          ResultSetMetaData meta = rejectScans.getMetaData();
-          int columnCount = meta.getColumnCount();
-
-          while (rejectScans.next()) {
-            for (int i = 1; i <= columnCount; i++) {
-              String columnName = meta.getColumnName(i);
-              String value = rejectScans.getString(i);
-              System.out.printf("%s = %s%n", columnName, value);
-            }
-            System.out.println("-----");
-          }
-        }
-
-        stmt.close();
-        conn.close();
-      } catch (Exception e) {
-
-        e.printStackTrace();
-
-        var rejectErrors = conn.createStatement().executeQuery("SELECT * FROM reject_errors");
-        try (rejectErrors) {
-          ResultSetMetaData meta = rejectErrors.getMetaData();
-          int columnCount = meta.getColumnCount();
-
-          while (rejectErrors.next()) {
-            for (int i = 1; i <= columnCount; i++) {
-              String columnName = meta.getColumnName(i);
-              String value = rejectErrors.getString(i);
-              System.out.printf("%s = %s%n", columnName, value);
-            }
-            System.out.println("-----");
-          }
-        }
-
-        var rejectScans = conn.createStatement().executeQuery("SELECT * FROM reject_scans");
-        try (rejectScans) {
-          ResultSetMetaData meta = rejectScans.getMetaData();
-          int columnCount = meta.getColumnCount();
-
-          while (rejectScans.next()) {
-            for (int i = 1; i <= columnCount; i++) {
-              String columnName = meta.getColumnName(i);
-              String value = rejectScans.getString(i);
-              System.out.printf("%s = %s%n", columnName, value);
-            }
-            System.out.println("-----");
-          }
-        }
+  private void printResult(org.jooq.Result<?> result) {
+    for (var record : result) {
+      for (var field : result.fields()) {
+        var columnName = field.getName();
+        var value = record.get(field);
+        System.out.printf("%s = %s%n", columnName, value);
       }
-      return null;
-    } catch (SQLException e) {
-      throw new RuntimeException(e);
+      System.out.println("-----");
     }
-
-//    try {
-////      dsl.execute(String.format("""
-////          CREATE TABLE ontime AS SELECT * FROM read_csv_auto('%s');
-////          """, s3Url)
-////      );
-////      var o1 = dsl.select().from("ontime").fetch();
-////
-////      // 生の SQL で取得するしかないか
-//      var pragmaResult = dsl.fetch(String.format("DESCRIBE SELECT * FROM read_csv_auto('%s')", s3Url));
-//
-//      List<String> columnNames = pragmaResult.getValues("column_name", String.class);
-//
-//      var fieldsMap = IntStream.range(0, columnNames.size())
-//          .boxed()
-//          .collect(Collectors.toMap(
-//              i -> i,
-//              i -> DSL.field('"' + columnNames.get(i) + '"')
-//          ));
-//      var fields = List.of(
-//          DSL.field(fieldsMap.get(1).getName(), Long.class).as("no"),
-//          DSL.field(fieldsMap.get(2).getName(), String.class).as("customer_code"),
-//          DSL.field(fieldsMap.get(0).getName(), LocalDate.class).as("date"),
-//          DSL.field(fieldsMap.get(4).getName(), BigDecimal.class).as("amount")
-//      );
-//
-//      var res = dsl.select(fields)
-//          .from(String.format("""
-//                    read_csv(
-//                      '%s',
-//                      store_rejects = true,
-//                      rejects_scan = 'reject_scans',
-//                      rejects_table = 'reject_errors'
-//                    )
-//                  """, s3Url
-////            , header, skip
-//          ))
-//          .fetch();
-//
-//      return new Data(
-//          fields.stream().map(f -> new Header(f.getName(), f.getType().getName())).toList(),
-//          res.stream().map(record -> {
-//            String[] row = new String[fields.size()];
-//            for (int i = 0; i < fields.size(); i++) {
-//              var value = record.get(fields.get(i));
-//              row[i] = value != null ? value.toString() : null;
-//            }
-//            return row;
-//          }).toList()
-//      );
-//    } catch (Exception e) {
-////      var rejectScans = dsl.select().from("reject_scans").fetch();
-////      var rejectErrors = dsl.select().from("reject_errors").fetch();
-//
-//      throw e;
-//    }
   }
 }

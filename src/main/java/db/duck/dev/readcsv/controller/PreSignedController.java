@@ -2,6 +2,7 @@ package db.duck.dev.readcsv.controller;
 
 import java.net.URL;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,11 +23,13 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 @RequestMapping("/s3")
 public class PreSignedController {
 
+  private static final long MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
   // http://localhost:8080/s3/presigned?filename=sample&prefix=dev
   @GetMapping("/presigned")
   public String getPreSignedUrl(@RequestParam String filename, @RequestParam String prefix) {
     String bucket = "duck-db-dev";
-    String key = prefix + "/" + filename + "_" + UUID.randomUUID() + ".csv";
+    String key = prefix + "/" + filename + ".csv";
 
     try (S3Presigner presigner = S3Presigner.builder()
         .region(Region.AP_NORTHEAST_1)
@@ -37,6 +40,9 @@ public class PreSignedController {
           .bucket(bucket)
           .key(key)
           .contentType("text/csv")
+          .overrideConfiguration(
+              o -> o.putHeader("If-None-Match", List.of("*"))
+          )
           .build();
 
       PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
